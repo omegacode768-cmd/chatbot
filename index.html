@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chatbot Pribadi</title>
+
+  <!-- Markdown parser -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <!-- Highlight.js -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/atom-one-dark.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/highlight.min.js"></script>
+  <script>hljs.highlightAll();</script>
+
+  <style>
+    body {
+      font-family: 'Helvetica Neue', Arial, sans-serif;
+      background-color: #0a0a0a; color: #ffffff;
+      display: flex; justify-content: center; align-items: center;
+      min-height: 100vh; margin: 0;
+    }
+    #chat-container {
+      width: 100%; max-width: 600px; height: 100vh;
+      display: flex; flex-direction: column;
+      background-color: #121212; border-radius: 20px; overflow: hidden;
+      box-shadow: 0 0 20px rgba(0,0,0,0.5);
+    }
+    #chat-header {
+      padding: 15px; background-color: #1c1c1c;
+      font-size: 18px; font-weight: bold; border-bottom: 1px solid #2a2a2a;
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    #chat-history {
+      flex: 1; padding: 20px; overflow-y: auto;
+      display: flex; flex-direction: column; gap: 15px;
+    }
+    .message { max-width: 85%; font-size: 16px; line-height: 1.4;
+      animation: fadeIn 0.3s ease; display: flex; flex-direction: column; gap: 6px; }
+    .user-message {
+      align-self: flex-end; background-color: #007bff; color: #fff;
+      padding: 12px 18px; border-radius: 20px;
+    }
+    .bot-message { align-self: flex-start; color: #d1d1d1; }
+    .bot-content-wrapper { padding: 6px 0; }
+    .copy-btn {
+      cursor: pointer; border: none; outline: none;
+      background: #2a2a2a; color: #fff; border-radius: 6px;
+      padding: 4px 8px; font-size: 12px; align-self: flex-start;
+      transition: background 0.2s ease;
+    }
+    .copy-btn:hover { background: #007bff; }
+    .copy-btn.copied { background: #28a745; }
+    pre {
+      border-radius: 8px; padding: 10px; overflow-x: auto;
+      font-size: 14px; margin: 8px 0;
+    }
+    .loading-dots::after {
+      content: ''; display: inline-block; width: 1em;
+      animation: dots 1.5s steps(3,end) infinite; color: #007bff;
+    }
+    @keyframes dots { 0%,20%{content:'';} 40%{content:'.';} 60%{content:'..';} 80%,100%{content:'...';} }
+    #chat-input {
+      display: flex; padding: 10px; background-color: #1c1c1c;
+      border-top: 1px solid #2a2a2a; gap: 10px;
+    }
+    #message-input {
+      flex: 1; padding: 12px; border: none; border-radius: 20px;
+      background-color: #333; color: #fff; font-size: 16px;
+    }
+    #send-button, .action-button {
+      padding: 12px; background-color: #007bff; border: none;
+      border-radius: 50%; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+    }
+    #send-icon, .action-icon { width: 20px; height: 20px; fill: #fff; }
+    #speed-select {
+      background: #2a2a2a; color: #fff; border: none;
+      border-radius: 8px; padding: 4px 6px; font-size: 14px; cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <div id="chat-container">
+    <div id="chat-header">
+      <span>Chatbot Pribadi</span>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <select id="speed-select">
+          <option value="80">Slow</option>
+          <option value="40" selected>Normal</option>
+          <option value="20">Fast</option>
+        </select>
+        <button id="clear-button" class="action-button" title="Bersihkan Chat">
+          🗑
+        </button>
+      </div>
+    </div>
+    <div id="chat-history"></div>
+    <div id="chat-input">
+      <input type="text" id="message-input" placeholder="Ketik pesan Anda...">
+      <button id="send-button">➡️</button>
+    </div>
+  </div>
+
+  <script>
+    // simpan/ambil API key dari localStorage
+    let GEMINI_API_KEY = localStorage.getItem('gemini_key') || '';
+
+    async function ensureApiKey() {
+      if (GEMINI_API_KEY && GEMINI_API_KEY.length>0) return;
+      const k = prompt('Masukkan Gemini API key Anda (untuk penggunaan pribadi). Akan disimpan di perangkat.');
+      if (k && k.trim().length>0) {
+        GEMINI_API_KEY = k.trim();
+        localStorage.setItem('gemini_key', GEMINI_API_KEY);
+      } else {
+        throw new Error('API key tidak diisi. Tidak dapat melanjutkan.');
+      }
+    }
+
+    const chatHistory = document.getElementById('chat-history');
+    const messageInput = document.getElementById('message-input');
+    const sendButton = document.getElementById('send-button');
+    const clearButton = document.getElementById('clear-button');
+    const speedSelect = document.getElementById('speed-select');
+    let typingSpeed = parseInt(speedSelect.value);
+    let conversationHistory = [];
+
+    speedSelect.addEventListener('change',()=>typingSpeed=parseInt(speedSelect.value));
+
+    function copyToClipboard(text, btn){
+      navigator.clipboard.writeText(text).then(()=>{
+        btn.textContent='✓ Disalin'; btn.classList.add('copied');
+        setTimeout(()=>{btn.textContent='Salin';btn.classList.remove('copied');},1500);
+      });
+    }
+
+    function addMessage(text, isUser, typewriter=false){
+      const msg=document.createElement('div');
+      msg.classList.add('message',isUser?'user-message':'bot-message');
+      if(isUser){
+        msg.textContent=text;
+      } else {
+        const wrap=document.createElement('div'); wrap.classList.add('bot-content-wrapper');
+        const copyBtn=document.createElement('button'); copyBtn.textContent='Salin';
+        copyBtn.classList.add('copy-btn');
+        copyBtn.addEventListener('click',()=>copyToClipboard(text,copyBtn));
+        msg.appendChild(wrap); msg.appendChild(copyBtn);
+
+        if(typewriter){
+          let i=0; let interval=setInterval(()=>{
+            wrap.innerHTML=marked.parse(text.substring(0,i+1));
+            i++; chatHistory.scrollTop=chatHistory.scrollHeight;
+            if(i>=text.length){
+              clearInterval(interval);
+              wrap.innerHTML=marked.parse(text);
+              wrap.querySelectorAll('pre code').forEach(block=>hljs.highlightElement(block));
+            }
+          },typingSpeed);
+        } else {
+          wrap.innerHTML=marked.parse(text);
+          wrap.querySelectorAll('pre code').forEach(block=>hljs.highlightElement(block));
+        }
+      }
+      chatHistory.appendChild(msg); chatHistory.scrollTop=chatHistory.scrollHeight;
+    }
+
+    function showLoading(){
+      const m=document.createElement('div');m.classList.add('message','bot-message','loading-dots');
+      m.textContent='Bot sedang mengetik'; chatHistory.appendChild(m); return m;
+    }
+
+    async function getGeminiResponse(userMessage){
+      try {
+        await ensureApiKey();
+      } catch(err) {
+        return "❌ API key belum diisi.";
+      }
+      const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
+      const contents=[...conversationHistory,{role:"user",parts:[{text:userMessage}]}];
+      try{
+        const res=await fetch(API_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contents})});
+        const json=await res.json();
+        return json.candidates?.[0]?.content?.parts?.[0]?.text || "⚠️ Tidak ada respons.";
+      }catch(e){return "❌ Error: "+e.message;}
+    }
+
+    async function sendMessage(){
+      const userText=messageInput.value.trim(); if(!userText) return;
+      addMessage(userText,true); messageInput.value='';
+      const loading=showLoading();
+      const botText=await getGeminiResponse(userText);
+      chatHistory.removeChild(loading);
+      addMessage(botText,false,true);
+      conversationHistory.push({role:"user",parts:[{text:userText}]});
+      conversationHistory.push({role:"model",parts:[{text:botText}]});
+    }
+
+    sendButton.addEventListener('click',sendMessage);
+    messageInput.addEventListener('keypress',e=>{if(e.key==='Enter')sendMessage();});
+    clearButton.addEventListener('click',()=>{chatHistory.innerHTML='';conversationHistory=[];});
+    document.addEventListener('DOMContentLoaded',()=>addMessage("👋 Selamat datang di *Chatbot Pribadi*.\n\nCoba tanyakan sesuatu!",false));
+  </script>
+</body>
+</html>
